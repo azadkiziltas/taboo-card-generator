@@ -1,0 +1,7 @@
+[
+  {"target": "airplane", "language": "en", "difficulty": "medium"},
+  {"target": "coffee", "language": "en", "difficulty": "medium"},
+  {"target": "library", "language": "en", "difficulty": "easy"},
+  {"target": "volcano", "language": "en", "difficulty": "medium"},
+  {"target": "gravity", "language": "en", "difficulty": "hard"}
+]

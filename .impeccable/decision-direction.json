@@ -1,0 +1,130 @@
+{
+  "title": "Kart Üretim Arayüzü — görsel dünya",
+  "question": "Zar, kalkış panosu yönünü atadı. Bunu mu alalım, alternatiflerden birini mi, yoksa yeniden mi atalım?",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Kalkış Panosu (split-flap)",
+      "kicker": "THE ROLL",
+      "lineage": "Solari tipi istasyon/havalimanı kalkış tabelaları",
+      "thesis": "Her üretim isteği bir sefer: kartlar panoya harf harf çevrilerek düşer, inceleme 'durum' sütununa damga vurmaktır.",
+      "palette": ["#111214", "#1f2124", "#f2efe6", "#f3c318", "#8a8f96"],
+      "materials": ["kararmış alüminyum pano kasası", "ortasından yarık flap karoları", "istasyon saati"],
+      "viewport": "Solda bilet gişesi gibi dar bir istek formu (dil, kategori, zorluk, adet, konu, ÇAĞIR); sağda sütunlu pano: HEDEF · 5 YASAKLI KELİME · DİL/ZORLUK · DURUM; başlık şeridinde bekleme süresini sayan istasyon saati.",
+      "risk": "Flap animasyonu incelemeyi yavaşlatırsa süse döner; Arapça kelimeler harf harf çevrilemez, kelime-karo olarak döner; Türkçe büyük harf (İ/ı) bozulmasın diye kartlar orijinal harf büyüklüğüyle gösterilir.",
+      "raised": [
+        {"from": "challenger-cyclorama", "raise": "Her satırın durumu adlandırılmış ayrık hallerden geçer (BEKLİYOR · GELDİ · İNCELENDİ · YENİLENİYOR · HATA); renk hiçbir zaman tek sinyal değil."},
+        {"from": "challenger-jackfield", "raise": "Geri bildirim renkle değil işaretle çizilir: İYİ düz damga, KÖTÜ çarpı damga, zorluk üçlü çentik; siyah-beyaz baskıda bile okunur."},
+        {"from": "challenger-transit", "raise": "Bir satır seçilince yerinde büyür, diğerleri söner ama pano bağlamı kaybolmaz."},
+        {"from": "challenger-annual", "raise": "Tek yoğun (condensed) grotesk yüz: pano karakterleri, etiketler ve form aynı ailede; ikinci yazı yüzü yok."}
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "Kontak Baskı ve Yağlı Kalem",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "fotoğraf editörünün kontak baskı ve seçim ritüeli",
+      "thesis": "Bir üretim partisi bir film rulosudur; editör iyi kareleri yağlı kalemle daire içine alır, kötüleri çizer.",
+      "palette": ["#0e0e0e", "#f4f4f1", "#d7261e", "#f2c500", "#7c7f82"],
+      "materials": ["film kenarı kare numaraları", "parlak baskı kağıdı", "kırmızı ve sarı yağlı kalem"],
+      "viewport": "Parti, kare numaralı (14, 14A…) bir kontak baskı olarak ızgarada; her kart bir kare; seçim işaretleri kartın üstüne elle çizilmiş gibi düşer.",
+      "risk": "Fotoğraf metaforu metin kartlar için kostüm gibi durabilir; elle çizim işaretleri tutarsız görünürse amatör okunur."
+    },
+    {
+      "id": "challenger-terminal",
+      "label": "Fosfor Terminal",
+      "verdict": "competitive",
+      "lineage": "yeşil fosforlu makine odası terminali",
+      "thesis": "Üretim bir oturum dökümüdür: istek yazılır, kartlar satır satır basılır, inceleme klavyeyle yapılır.",
+      "palette": ["#050805", "#33ff66", "#1a7a33", "#b8ffcc"],
+      "materials": ["kavisli cam", "tarama çizgisi parıltısı", "tek bitmap monospace"],
+      "viewport": "Tek sürekli döküm; üstte komut satırı (generate --lang tr ...), altında gelen kartlar blok blok; g/b/1/2/3 kısayollarıyla geri bildirim.",
+      "case": "Geliştirici ekip kendini burada tanır (kitle ekseninde güçlü); ama kartları sütunlu karşılaştırmak ve fareyle hızlı işaretlemek panodan daha zor, netlikte kaybediyor.",
+      "risk": "'Siyah zemin + tek neon' kategorisinin en bilinen görünümü; tek monospace yüz Arapça ve uzun kelimelerde okunurluğu düşürür.",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-phosphor-terminal-midnight-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/signals-instruments-phosphor-terminal-midnight.webp"
+    },
+    {
+      "id": "challenger-annual",
+      "label": "Tasarım Yıllığı Levhaları",
+      "verdict": "declined",
+      "lineage": "tasarım yıllığının levha bölümü",
+      "thesis": "Her kart kayıt işaretleriyle çerçevelenmiş bir levha.",
+      "palette": ["#f5f4f6", "#16181a", "#dcddf3", "#c9c7c4"],
+      "materials": ["kuşesiz kağıt", "kayıt artıları", "kıl çizgiler"],
+      "viewport": "Kıl çizgili 12 kolonlu levha ızgarası, kartlar levha olarak.",
+      "case": "Netlikte panoyla başa baş, ekibin kendini tanıması zayıf; toplu inceleme için fazla ferah.",
+      "kept": "Tek yazı yüzü disiplini: gösterim ve etiket aynı grotesk.",
+      "risk": "Editoryal kıl çizgi + mono etiket kalıbına düşer.",
+      "hero": "https://impeccable.style/worlds/cards/design-annual-s-plate-section-hero.webp"
+    },
+    {
+      "id": "challenger-jackfield",
+      "label": "Jack Paneli Normalleme Çizelgesi",
+      "verdict": "declined",
+      "lineage": "yayın odası patch paneli çizelgeleri",
+      "thesis": "Her öğe varsayılanına kehribar bir bağ çizgisiyle bağlı şeritlerde.",
+      "palette": ["#0b0b0c", "#ffb000", "#3a2a00"],
+      "materials": ["siyah cam", "numaralı şeritler", "kehribar bağ çizgileri"],
+      "viewport": "Numaralı şerit ızgarası, solda sabit lejant.",
+      "case": "Konfigürasyon yüzeyi için güçlü, kart incelemesi için dolaylı; iki eksende de kaybediyor.",
+      "kept": "Durumu renk değil çizgi deseni taşır.",
+      "risk": "Kart içeriği şerit metaforunun altında kaybolur.",
+      "hero": "https://impeccable.style/worlds/cards/operate-b-normalled-jackfield-hero.webp"
+    },
+    {
+      "id": "challenger-transit",
+      "label": "Gece Metro Diyagramı",
+      "verdict": "declined",
+      "lineage": "emaye metro hat haritaları",
+      "thesis": "Kartlar hatlar üzerinde duraklar.",
+      "palette": ["#101a3a", "#f4f1ea", "#d7263d", "#2b5fd9", "#f2a900"],
+      "materials": ["gece mavisi emaye", "porselen istasyon işaretleri"],
+      "viewport": "Kategori hatları, kartlar duraklar.",
+      "case": "Kart–durak eşlemesi zorlama; netlik ve tanınma zayıf.",
+      "kept": "Seçilen hattı öne alırken ağı kaybetmemek.",
+      "risk": "Metafor kartın kendisini gölgeler.",
+      "hero": "https://impeccable.style/worlds/cards/wayfinding-cartography-signage-midnight-transit-diagram-hero.webp"
+    },
+    {
+      "id": "challenger-cyclorama",
+      "label": "Şafak Siklorama Işığı",
+      "verdict": "declined",
+      "lineage": "tiyatro ışık tasarımı",
+      "thesis": "Bekleme geceden gündüze bir ışık geçişi.",
+      "palette": ["#050507", "#1f3fb8", "#e2728f", "#ffffff"],
+      "materials": ["kavisli siklorama", "ışık bantları"],
+      "viewport": "Karanlıktan aydınlığa bantlar, kartlar sahnede.",
+      "case": "Atmosfer güçlü, görev netliği zayıf; iki eksende de kaybediyor.",
+      "kept": "Adlandırılmış ayrık evreler; renk tek sinyal değil.",
+      "risk": "Araç değil sahne gibi okunur.",
+      "hero": "https://impeccable.style/worlds/cards/stagecraft-theater-lighting-cyclorama-dawn-hero.webp"
+    },
+    {
+      "id": "challenger-cloud",
+      "label": "İrizan Bulut Kenarı",
+      "verdict": "declined",
+      "lineage": "atmosferik optik",
+      "thesis": "Renk yalnızca kenarda, metin alanı akromatik.",
+      "palette": ["#ffffff", "#5b6570", "#9fe3c8", "#e9a7c0", "#9b7fd6"],
+      "materials": ["beyaz bulut gövdesi", "pastel kenar bandı"],
+      "viewport": "Geniş beyaz alan, renkli kıl kenarlar.",
+      "case": "Sakin ama kimliksiz; kitle ve netlikte kaybediyor.",
+      "kept": "Vurgu rengini yalnızca aktif satırın kenarına hapsetmek.",
+      "risk": "Soluk ve yönsüz okunur.",
+      "hero": "https://impeccable.style/worlds/cards/clouds-storms-auroras-iridescent-cloud-edge-hero.webp"
+    }
+  ],
+  "reroll": {"registers": ["safer", "bolder"]},
+  "buildPath": {"value": "code"},
+  "canon": true,
+  "canonCard": {
+    "label": "Kategori standardı",
+    "thesis": "İç araçların standart düzeni, kusursuz işçilikle: solda form, sağda kart ızgarası.",
+    "palette": ["#ffffff", "#0f172a", "#2563eb", "#e2e8f0"],
+    "materials": ["temiz ızgara", "nötr bileşenler"],
+    "viewport": "Üstte başlık, solda üretim formu, sağda duyarlı kart ızgarası; her kartta geri bildirim düğmeleri.",
+    "risk": "Tasarım gereği diğer iç araçlardan ayırt edilemez."
+  },
+  "steer": true
+}

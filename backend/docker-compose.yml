@@ -1,0 +1,51 @@
+name: taboo-backend
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-taboo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taboo}
+      POSTGRES_DB: ${POSTGRES_DB:-taboo}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Inside the container the database is reachable by service name.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-taboo}:${POSTGRES_PASSWORD:-taboo}@postgres:5432/${POSTGRES_DB:-taboo}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional: run Ollama in a container instead of on the host.
+  #   docker compose --profile ollama up -d
+  #   OLLAMA_BASE_URL_DOCKER=http://ollama:11434 docker compose up -d api
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+volumes:
+  postgres-data:
+  ollama-data:

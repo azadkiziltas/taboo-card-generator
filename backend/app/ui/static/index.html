@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Kart Üretimi</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='3' width='9' height='11.5' rx='1.8' fill='%231f883d'/%3E%3Cpath d='M5.5 1.5h6.5a1.5 1.5 0 0 1 1.5 1.5v9' fill='none' stroke='%231f883d' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-cards" viewBox="0 0 16 16"><rect x="2.75" y="3.75" width="8" height="10.5" rx="1.5"/><path d="M5.75 1.75h6a1.5 1.5 0 0 1 1.5 1.5v8.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.25 8.5l3 3 6.5-7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 16 16"><path d="M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 16 16"><path d="M2.75 8a5.25 5.25 0 0 1 9.2-3.46"/><path d="M12.25 1.75v3h-3"/><path d="M13.25 8a5.25 5.25 0 0 1-9.2 3.46"/><path d="M3.75 14.25v-3h3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.25" y="5.25" width="8" height="8" rx="1.5"/><path d="M10.75 5.25v-1.5a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5h1.5"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 16 16"><rect x="1.75" y="3.75" width="12.5" height="8.5" rx="1.5"/><path d="M4.5 6.5h.01M7 6.5h.01M9.5 6.5h.01M12 6.5h.01M5 9.5h6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 16 16"><path d="M8 2.25L1.75 13.25h12.5z"/><path d="M8 6.5v3M8 11.5h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.5v3.5M8 5h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75V8l2.25 1.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 9h6.3l.6-9"/></symbol>
+    <symbol id="i-book" viewBox="0 0 16 16"><path d="M2.75 3.25h3.5A1.75 1.75 0 0 1 8 5v8.25a1.5 1.5 0 0 0-1.5-1.5H2.75z"/><path d="M13.25 3.25h-3.5A1.75 1.75 0 0 0 8 5v8.25a1.5 1.5 0 0 1 1.5-1.5h3.75z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 16 16"><path d="M2.75 8a5.25 5.25 0 1 0 1.54-3.71"/><path d="M2.75 2.5v2.25H5"/><path d="M8 5.25V8l2 1.25"/></symbol>
+  </svg>
+
+  <header class="app-header">
+    <div class="app-header__brand">
+      <svg class="icon icon--brand" aria-hidden="true"><use href="#i-cards"/></svg>
+      <span class="app-header__title">Kart Üretimi</span>
+      <span class="label label--muted">iç araç</span>
+    </div>
+    <nav class="app-header__actions" aria-label="Araçlar">
+      <button type="button" class="btn btn--invisible health" id="health-button" popovertarget="health-popover" aria-describedby="health-text">
+        <span class="health__dot" data-state="unknown" aria-hidden="true"></span>
+        <span id="health-text" class="health__text">Durum kontrol ediliyor</span>
+      </button>
+      <div id="health-popover" class="popover" popover>
+        <p class="popover__title">Sistem bileşenleri</p>
+        <dl class="health-list" id="health-list"></dl>
+        <p class="popover__note" id="health-checked"></p>
+      </div>
+      <button type="button" class="btn btn--invisible btn--icon-text" id="shortcuts-button" aria-keyshortcuts="?">
+        <svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg>
+        <span class="hide-sm">Kısayollar</span>
+      </button>
+      <a class="btn btn--invisible btn--icon-text" href="/docs" target="_blank" rel="noopener">
+        <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+        <span class="hide-sm">API</span>
+      </a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <aside class="layout__side">
+      <form class="box" id="generate-form" novalidate>
+        <div class="box__header">
+          <h2 class="box__title">Yeni üretim</h2>
+        </div>
+        <div class="box__body form">
+          <div class="field">
+            <label class="field__label" for="f-language">Dil</label>
+            <select class="control" id="f-language" name="language">
+              <option value="tr">Türkçe (tr)</option>
+              <option value="en">İngilizce (en)</option>
+              <option value="de">Almanca (de)</option>
+              <option value="fr">Fransızca (fr)</option>
+              <option value="es">İspanyolca (es)</option>
+              <option value="ar">Arapça (ar)</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="f-category">Kategori</label>
+            <input class="control" id="f-category" name="category" list="category-suggestions"
+                   maxlength="50" autocomplete="off" spellcheck="false" placeholder="örn. technology, uzay yolculuğu"
+                   aria-describedby="f-category-hint">
+            <datalist id="category-suggestions">
+              <option value="technology"></option>
+              <option value="food"></option>
+              <option value="animals"></option>
+              <option value="sports"></option>
+              <option value="places"></option>
+              <option value="nature"></option>
+              <option value="transport"></option>
+            </datalist>
+            <p class="field__hint" id="f-category-hint">Bir kategori ya da konu yaz. Boş bırakılırsa genel kartlar üretilir.</p>
+          </div>
+
+          <fieldset class="field">
+            <legend class="field__label">Zorluk</legend>
+            <div class="segmented segmented--block" role="radiogroup" aria-label="Zorluk" aria-describedby="f-difficulty-hint">
+              <label class="segmented__item segmented__item--wide"><input type="radio" name="difficulty" value="" checked><span>Fark etmez</span></label>
+              <label class="segmented__item"><input type="radio" name="difficulty" value="easy"><span>Kolay</span></label>
+              <label class="segmented__item"><input type="radio" name="difficulty" value="medium"><span>Orta</span></label>
+              <label class="segmented__item"><input type="radio" name="difficulty" value="hard"><span>Zor</span></label>
+            </div>
+            <p class="field__hint" id="f-difficulty-hint">Seçilmezse kartlar zorluk belirtilmeden üretilir.</p>
+          </fieldset>
+
+          <div class="field">
+            <label class="field__label" for="f-count">Kart sayısı</label>
+            <input class="control control--narrow" id="f-count" name="count" type="number"
+                   inputmode="numeric" min="1" max="30" step="1" value="5" aria-describedby="f-count-hint">
+            <p class="field__hint" id="f-count-hint">1–30 arası. Az kart daha hızlı gelir.</p>
+          </div>
+
+
+          <p class="form__error" id="form-error" role="alert" hidden></p>
+
+          <button type="submit" class="btn btn--primary btn--block" id="generate-button" aria-keyshortcuts="Control+Enter Meta+Enter">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="btn__text">Kart üret</span>
+          </button>
+          <p class="field__hint form__footnote">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-clock"/></svg>
+            Yerel modelde 5 kart genellikle 20 sn civarında gelir.
+          </p>
+        </div>
+      </form>
+
+      <section class="box session-box" aria-labelledby="session-title">
+        <div class="box__header">
+          <h2 class="box__title" id="session-title">Bu oturum</h2>
+        </div>
+        <dl class="stats" id="session-stats">
+          <div class="stats__item"><dt>Kart</dt><dd data-stat="total">0</dd></div>
+          <div class="stats__item"><dt>İncelendi</dt><dd data-stat="reviewed">0</dd></div>
+          <div class="stats__item"><dt>İyi</dt><dd data-stat="good">0</dd></div>
+          <div class="stats__item"><dt>Kötü</dt><dd data-stat="bad">0</dd></div>
+        </dl>
+        <div class="box__footer">
+          <button type="button" class="btn btn--sm btn--danger-quiet" id="clear-button">
+            <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+            <span class="btn__text">Listeyi temizle</span>
+          </button>
+          <p class="field__hint">Kartlar veritabanında kalır; yalnızca bu listeyi temizler.</p>
+        </div>
+      </section>
+    </aside>
+
+    <main class="layout__main" id="main">
+      <section class="progress-box box" id="progress" hidden aria-live="polite">
+        <div class="progress-box__head">
+          <div>
+            <p class="progress-box__title" id="progress-title">Kartlar üretiliyor</p>
+            <p class="progress-box__meta" id="progress-meta"></p>
+          </div>
+          <div class="progress-box__timer">
+            <span class="timer" id="progress-timer">0 sn</span>
+            <button type="button" class="btn btn--sm" id="cancel-button">Beklemeyi bırak</button>
+          </div>
+        </div>
+        <div class="progress" aria-hidden="true"><span class="progress__bar" id="progress-bar"></span></div>
+        <p class="progress-box__note" id="progress-note">Model kartları doğrular, gerekirse düzeltir.</p>
+      </section>
+
+      <div class="flash flash--danger" id="error-flash" role="alert" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="flash__body">
+          <p class="flash__title" id="error-title"></p>
+          <p class="flash__text" id="error-text"></p>
+        </div>
+        <button type="button" class="btn btn--sm" id="retry-button">Tekrar dene</button>
+        <button type="button" class="btn btn--sm btn--invisible btn--icon" id="dismiss-error" aria-label="Kapat">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <div class="toolbar">
+        <h1 class="toolbar__title">Kartlar <span class="counter" id="total-counter">0</span></h1>
+        <div class="segmented" role="group" aria-label="Filtre" id="filter">
+          <button type="button" class="segmented__button" data-filter="all" aria-pressed="true">Tümü <span class="counter" data-count="all">0</span></button>
+          <button type="button" class="segmented__button" data-filter="unreviewed" aria-pressed="false">İncelenmemiş <span class="counter" data-count="unreviewed">0</span></button>
+          <button type="button" class="segmented__button" data-filter="good" aria-pressed="false">İyi <span class="counter" data-count="good">0</span></button>
+          <button type="button" class="segmented__button" data-filter="bad" aria-pressed="false">Kötü <span class="counter" data-count="bad">0</span></button>
+        </div>
+      </div>
+
+      <div id="batches" class="batches"></div>
+
+      <div class="blankslate" id="empty" hidden>
+        <svg class="blankslate__icon" aria-hidden="true"><use href="#i-cards"/></svg>
+        <h2 class="blankslate__title">Henüz kart yok</h2>
+        <p class="blankslate__text">Soldan dil, kategori ve zorluğu seç, sonra <strong>Kart üret</strong>'e bas. Gelen kartlar burada incelemeye hazır olarak listelenir.</p>
+        <p class="blankslate__text blankslate__keys">Kartlar arasında <kbd>j</kbd>&nbsp;<kbd>k</kbd> ile gez, <kbd>g</kbd>&nbsp;<kbd>b</kbd> ile iyi&nbsp;/&nbsp;kötü işaretle. Tüm kısayollar: <kbd>?</kbd></p>
+      </div>
+
+      <div class="blankslate blankslate--compact" id="filter-empty" hidden>
+        <h2 class="blankslate__title">Bu filtrede kart yok</h2>
+        <p class="blankslate__text"><button type="button" class="btn-link" id="reset-filter">Tüm kartları göster</button></p>
+      </div>
+    </main>
+  </div>
+
+  <p class="sr-only" id="announcer" aria-live="polite"></p>
+
+  <dialog class="dialog" id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+    <div class="dialog__header">
+      <h2 class="dialog__title" id="shortcuts-title">Klavye kısayolları</h2>
+      <form method="dialog"><button class="btn btn--invisible btn--icon" aria-label="Kapat"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></form>
+    </div>
+    <div class="dialog__body">
+      <h3 class="shortcut-group">Kartlarda gezinme</h3>
+      <dl class="shortcuts">
+        <div><dt><kbd>j</kbd></dt><dd>Sonraki kart</dd></div>
+        <div><dt><kbd>k</kbd></dt><dd>Önceki kart</dd></div>
+      </dl>
+      <h3 class="shortcut-group">Seçili kart</h3>
+      <dl class="shortcuts">
+        <div><dt><kbd>g</kbd></dt><dd>İyi olarak işaretle</dd></div>
+        <div><dt><kbd>b</kbd></dt><dd>Kötü olarak işaretle</dd></div>
+        <div><dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Zorluk: kolay, uygun, zor (zorluk seçilmiş kartlarda)</dd></div>
+        <div><dt><kbd>r</kbd></dt><dd>Yeniden üret</dd></div>
+        <div><dt><kbd>c</kbd></dt><dd>JSON olarak kopyala</dd></div>
+      </dl>
+      <h3 class="shortcut-group">Genel</h3>
+      <dl class="shortcuts">
+        <div><dt><kbd>n</kbd></dt><dd>Formu odakla</dd></div>
+        <div><dt><kbd>⌘</kbd> <kbd>Enter</kbd></dt><dd>Formdan kart üret</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>Bu pencere</dd></div>
+      </dl>
+    </div>
+  </dialog>
+
+  <template id="card-template">
+    <li class="card-row" tabindex="-1">
+      <div class="card-row__content">
+        <div class="card-row__lexeme">
+          <h3 class="card-row__target"></h3>
+          <ol class="words" aria-label="Yasaklı kelimeler"></ol>
+        </div>
+        <div class="card-row__meta"></div>
+      </div>
+      <div class="card-row__actions">
+        <div class="btn-group" role="group" aria-label="Kalite">
+          <button type="button" class="btn btn--sm btn--rate" data-action="good" aria-pressed="false" aria-keyshortcuts="g">
+            <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>İyi</span>
+          </button>
+          <button type="button" class="btn btn--sm btn--rate" data-action="bad" aria-pressed="false" aria-keyshortcuts="b">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg><span>Kötü</span>
+          </button>
+        </div>
+        <div class="difficulty-feedback" role="group" aria-label="Zorluk nasıldı?">
+          <span class="difficulty-feedback__label" aria-hidden="true">Zorluk</span>
+          <div class="segmented segmented--sm">
+            <button type="button" class="segmented__button" data-action="too_easy" aria-pressed="false" aria-keyshortcuts="1">Kolay</button>
+            <button type="button" class="segmented__button" data-action="correct" aria-pressed="false" aria-keyshortcuts="2">Uygun</button>
+            <button type="button" class="segmented__button" data-action="too_hard" aria-pressed="false" aria-keyshortcuts="3">Zor</button>
+          </div>
+        </div>
+        <div class="card-row__tools">
+          <button type="button" class="btn btn--sm btn--icon" data-action="regenerate" aria-keyshortcuts="r" aria-label="Yeniden üret" title="Yeniden üret (r)">
+            <svg class="icon" aria-hidden="true"><use href="#i-sync"/></svg>
+          </button>
+          <button type="button" class="btn btn--sm btn--icon" data-action="copy" aria-keyshortcuts="c" aria-label="JSON olarak kopyala" title="JSON olarak kopyala (c)">
+            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+          </button>
+        </div>
+        <p class="card-row__status" aria-live="polite"></p>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

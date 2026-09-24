@@ -1,0 +1,107 @@
+# AI provider / model registry seed / routing configuration.
+#
+# ${VAR} and ${VAR:-default} are resolved from the environment (.env), so model names
+# never live in code. The `models` section seeds the `ai_models` registry table on startup
+# (MODEL_REGISTRY_SYNC=insert_missing keeps edits made through the admin API).
+#
+# Adding a cloud provider:
+#   1. add it under `providers` (type openai_compatible, api_key_env = env var NAME)
+#   2. add its model(s) under `models` with prices from the vendor's price list
+#   3. list the model under `routing.<task>.providers`
+# If the API key env var is empty the provider is disabled; the app still starts.
+
+providers:
+  ollama:
+    type: ollama
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+    timeout_seconds: ${OLLAMA_TIMEOUT_SECONDS:-180}
+
+  # cloud_a:
+  #   type: openai_compatible
+  #   base_url: https://api.cloud-a.example/v1
+  #   api_key_env: CLOUD_A_API_KEY
+  #   timeout_seconds: 60
+
+models:
+  - provider: ${DEFAULT_GENERATION_PROVIDER:-ollama}
+    model_name: ${DEFAULT_GENERATION_MODEL}
+    model_type: generation
+    enabled: true
+    is_local: true
+    priority: 10
+    capabilities:
+      structured_output: true   # Ollama enforces JSON schemas via `format`
+      json_mode: true
+      tool_calling: false
+      vision: false
+      streaming: true
+    context_window: ${GENERATION_CONTEXT_WINDOW:-32768}
+    languages: null             # null = every language
+    pricing:
+      input_cost_per_million: 0 # local: no API cost (infrastructure cost is not zero)
+      output_cost_per_million: 0
+      currency: USD
+    provider_options:
+      think: ${OLLAMA_THINK:-false}        # disable reasoning traces for thinking models
+      keep_alive: ${OLLAMA_KEEP_ALIVE:-15m}
+      num_ctx: ${OLLAMA_NUM_CTX:-4096}
+
+  - provider: ${FALLBACK_GENERATION_PROVIDER:-ollama}
+    model_name: ${FALLBACK_GENERATION_MODEL:-}   # optional second model; empty = skipped
+    model_type: generation
+    enabled: true
+    is_local: true
+    priority: 20
+    capabilities: {structured_output: true, json_mode: true, streaming: true}
+    pricing: {input_cost_per_million: 0, output_cost_per_million: 0, currency: USD}
+    provider_options: {think: false, keep_alive: 15m}
+
+  - provider: ${DEFAULT_EMBEDDING_PROVIDER:-ollama}
+    model_name: ${DEFAULT_EMBEDDING_MODEL}
+    model_type: embedding
+    enabled: true
+    is_local: true
+    priority: 10
+    languages: null
+    pricing: {input_cost_per_million: 0, output_cost_per_million: 0, currency: USD}
+    provider_options:
+      # "0" unloads the embedding model after each call - useful when the generation
+      # model barely fits into (GPU) memory.
+      keep_alive: ${OLLAMA_EMBED_KEEP_ALIVE:-5m}
+
+  # - provider: cloud_a
+  #   model_name: model-x
+  #   model_type: generation
+  #   is_local: false
+  #   priority: 30
+  #   capabilities: {structured_output: true, json_mode: true, streaming: true}
+  #   context_window: 128000
+  #   pricing: {input_cost_per_million: 0.10, output_cost_per_million: 0.40, currency: USD}
+
+routing:
+  card_generation:
+    strategy: priority          # priority | cost | quality | latency | local_first
+    max_provider_attempts: 3
+    providers:
+      - provider: ${DEFAULT_GENERATION_PROVIDER:-ollama}
+        model: ${DEFAULT_GENERATION_MODEL}
+        priority: 1
+      - provider: ${FALLBACK_GENERATION_PROVIDER:-ollama}
+        model: ${FALLBACK_GENERATION_MODEL:-}
+        priority: 2
+      # - provider: cloud_a
+      #   model: model-x
+      #   priority: 3
+
+  card_repair:
+    strategy: priority
+    max_provider_attempts: 2
+    providers:
+      - provider: ${DEFAULT_GENERATION_PROVIDER:-ollama}
+        model: ${DEFAULT_GENERATION_MODEL}
+        priority: 1
+      - provider: ${FALLBACK_GENERATION_PROVIDER:-ollama}
+        model: ${FALLBACK_GENERATION_MODEL:-}
+        priority: 2
+
+  # Tasks without an entry use every enabled generation model in registry priority order.

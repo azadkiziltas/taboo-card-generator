@@ -1,0 +1,12 @@
+[
+  {"target": "uçak", "language": "tr", "difficulty": "medium"},
+  {"target": "kahve", "language": "tr", "difficulty": "medium"},
+  {"target": "bilgisayar", "language": "tr", "difficulty": "easy"},
+  {"target": "gökkuşağı", "language": "tr", "difficulty": "medium"},
+  {"target": "kütüphane", "language": "tr", "difficulty": "easy"},
+  {"target": "penguen", "language": "tr", "difficulty": "easy"},
+  {"target": "satranç", "language": "tr", "difficulty": "medium"},
+  {"target": "volkan", "language": "tr", "difficulty": "medium"},
+  {"target": "demokrasi", "language": "tr", "difficulty": "hard"},
+  {"target": "yerçekimi", "language": "tr", "difficulty": "hard"}
+]
