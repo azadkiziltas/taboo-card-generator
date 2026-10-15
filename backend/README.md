@@ -570,3 +570,9 @@ Tamamı `.env.example` içinde açıklamalı olarak bulunur. En önemlileri:
 - Morfolojik analiz yok. `kitap`/`kitabı` gibi çekimler yakalanmaz, validator'a yeni bir kural olarak eklenebilir.
 - Blocklist dosyaları boş gelir; içerik politikası ürün kararıdır.
 - Örnek RAG verisi küçüktür (`project-seed`, CC0). Gerçek sözlük verisi eklerken `source_license` alanını doldur.
+
+---
+
+## Lisans
+
+Bu proje [MIT Lisansı](../LICENSE) ile lisanslanmıştır.

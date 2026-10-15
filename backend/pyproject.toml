@@ -3,6 +3,7 @@ name = "taboo-card-backend"
 version = "0.1.0"
 description = "Model-agnostic AI card generation backend for a multilingual word-guessing game"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
