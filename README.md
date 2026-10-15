@@ -1,313 +1,286 @@
-# Model-Agnostic AI Card Generation Backend --- Implementation Specification
+# Taboo Card Backend
 
-## 0. Amaç
+Çok dilli kelime anlatma oyunu (Flutter) için **modelden ve sağlayıcıdan bağımsız** AI kart
+üretim backend'i. İlk sağlayıcı local **Ollama** (varsayılan model `gemma4:12b`); cloud sağlayıcılar
+adapter yazarak veya yalnızca konfigürasyonla eklenir. Kart üretim kodu ve mobil API değişmez.
 
-Bu dokümanın amacı, Flutter ile geliştirilecek çok dilli bir kelime
-anlatma oyunu için **modelden ve sağlayıcıdan bağımsız AI backend
-mimarisi** oluşturmaktır.
+Ekip için bir kullanım arayüzü de gelir: **<http://localhost:8000/ui/>**. Kart üretme, inceleme,
+iyi/kötü ve zorluk geri bildirimi ile yeniden üretme buradan yapılır.
 
-Backend şu özelliklere sahip olmalıdır:
+- FastAPI + Pydantic v2 + SQLAlchemy 2 (async) + Alembic
+- PostgreSQL + pgvector (RAG)
+- Ollama (generation ve embedding ayrı modeller)
+- Structured JSON çıktı, deterministik kart validasyonu, repair/retry, provider fallback
+- Model registry (DB), routing policy (YAML), circuit breaker
+- Versiyonlu prompt dosyaları, AI request telemetry (token, latency, maliyet), benchmark
 
--   Local LLM çalıştırabilmeli (ilk geliştirme ortamı: Ollama + Qwen).
--   Cloud LLM sağlayıcıları sonradan adapter yazarak eklenebilmeli.
--   LLM sağlayıcısı/modeli değiştirilince kart üretim servisi ve mobil
-    API değişmemeli.
--   Generation modeli ile embedding modeli birbirinden tamamen
-    ayrılmalı.
--   RAG desteklemeli.
--   Çoklu dil desteklemeli.
--   Structured JSON çıktı üretmeli.
--   Kart çıktısını deterministic kurallarla doğrulamalı.
--   Retry ve provider fallback desteklemeli.
--   Model registry ve routing policy desteklemeli.
--   Promptlar versiyonlanmalı.
--   Model maliyeti, latency, hata ve kalite metrikleri kaydedilmeli.
--   İleride fine-tuning/SFT için kaliteli veri toplanabilmeli.
--   İlk sürüm ücretsiz/local geliştirmeye uygun olmalı.
--   Mimari production ortamına taşınabilir olmalı.
+---
 
-> Temel ilke: Domain katmanı `Ollama`, `Qwen`, herhangi bir cloud
-> sağlayıcı veya belirli bir SDK'yı bilmemelidir.
+## İçindekiler
 
-------------------------------------------------------------------------
+1. [Mimari](#mimari)
+2. [Hızlı başlangıç (Docker)](#hızlı-başlangıç-docker)
+3. [Local geliştirme (Docker'sız API)](#local-geliştirme)
+4. [Ollama](#ollama)
+5. [PostgreSQL / pgvector ve migration](#postgresql--pgvector-ve-migration)
+6. [API](#api)
+7. [RAG](#rag)
+8. [Model / provider değiştirme ve ekleme](#model--provider-değiştirme-ve-ekleme)
+9. [Validasyon, repair ve retry limitleri](#validasyon-repair-ve-retry-limitleri)
+10. [Promptlar](#promptlar)
+11. [Observability](#observability)
+12. [Testler ve benchmark](#testler-ve-benchmark)
+13. [Konfigürasyon referansı](#konfigürasyon-referansı)
+14. [Güvenlik](#güvenlik)
+15. [Bilinen sınırlar ve sonraki adımlar](#bilinen-sınırlar-ve-sonraki-adımlar)
 
-# 1. Önerilen Teknolojiler
+---
 
-İlk implementasyon:
+## Mimari
 
--   Python 3.12+
--   FastAPI
--   Pydantic v2
--   SQLAlchemy 2.x
--   Alembic
--   PostgreSQL
--   pgvector
--   httpx
--   Ollama
--   pytest
--   Docker / Docker Compose
--   Redis: ilk MVP için zorunlu değil, daha sonra cache/queue/rate limit
-    için eklenebilir.
-
-Asenkron I/O tercih et.
-
-------------------------------------------------------------------------
-
-# 2. Yüksek Seviye Mimari
-
-``` text
-Flutter
-   |
-   v
-FastAPI
-   |
-   v
-Card Application Service
-   |
-   +----------------+----------------+
-   |                |                |
-   v                v                v
-RAG Service    Prompt Service    Card Validator
-   |                                 |
-   v                                 |
-Embedding Router                     |
-   |                                 |
-   v                                 |
-pgvector                             |
-                                     |
-                    +----------------+
-                    v
-               Model Router
-                    |
-          +---------+---------+
-          |         |         |
-          v         v         v
-       Ollama    Cloud A   Cloud B
-          |
-        Qwen
-
-Model Router
-   |
-   +--> Model Registry
-   +--> Routing Policies
-   +--> Provider Health
-   +--> Capability Normalization
-
-Observability
-   |
-   +--> requests
-   +--> tokens
-   +--> estimated cost
-   +--> latency
-   +--> retries
-   +--> validation failures
-   +--> selected provider/model
+```text
+Flutter ──> FastAPI (app/api) ──> Use case'ler (app/application)
+                                   │
+            ┌──────────────────────┼─────────────────────────┐
+            v                      v                         v
+      RAG (retrieve)        PromptService (dosyalar)   CardValidator + DuplicateDetector
+            │                                                │
+      EmbeddingRouter ──> EmbeddingProvider                  │
+            │                                                │
+        pgvector                         ModelRouter <───────┘
+                                              │  registry + policy + circuit breaker
+                                  ┌───────────┼────────────┐
+                                  v           v            v
+                               Ollama     Cloud A (*)   Cloud B (*)      (*) konfigürasyonla
 ```
 
-------------------------------------------------------------------------
+**Katman kuralları** (`tests/unit/test_architecture.py` bunları otomatik kontrol eder):
 
-# 3. Katman Kuralları
+| Katman | Klasör | Bilir | Bilmez |
+|---|---|---|---|
+| Domain | `app/domain` | kendi entity / value object / arayüzleri (+ Pydantic şemaları) | FastAPI, SQLAlchemy, httpx, herhangi bir LLM SDK'sı |
+| Application | `app/application` | domain arayüzleri üzerinden orkestrasyon | altyapı implementasyonları, provider SDK'ları |
+| Infrastructure | `app/infrastructure` | Ollama/HTTP adapterları, PostgreSQL, pgvector, telemetry | FastAPI route'ları |
+| API | `app/api` | route'lar, DTO'lar, hata dönüşümleri | provider detayları |
 
-## Domain
+`app/bootstrap.py` tüm somut implementasyonları bağlayan tek yerdir (composition root).
 
-Saf iş kurallarını içerir.
+```text
+backend/
+  app/
+    main.py                 FastAPI app factory
+    bootstrap.py            composition root (DI)
+    cli.py                  seed/RAG/generate komutları
+    api/v1/                 public API: cards.py, health.py, schemas.py
+    api/admin/              admin/debug API (token korumalı)
+    api/errors.py           iç hatalar -> kontrollü public hata cevapları
+    domain/cards/           Card, validator, normalization, duplicates, safety, şema
+    domain/ai/              GenerationProvider, EmbeddingProvider, capabilities, routing,
+                            exceptions, cost, telemetry
+    domain/rag/             RagDocument, VectorStore arayüzü
+    application/cards/      engine (üret→doğrula→repair), generate_cards, generate_card,
+                            regenerate_card, submit_feedback
+    application/ai/         model_router.py, embedding_router.py
+    application/rag/        retrieve_context.py, index_document.py
+    infrastructure/ai/      providers (ollama, openai_compatible, fake), registry, routing, config
+    infrastructure/db/      SQLAlchemy modelleri, repository'ler, Alembic migration'ları
+    infrastructure/rag/     pgvector_store.py
+    infrastructure/observability/  telemetry repository, metrics, logging
+    prompts/card/*.md       versiyonlu promptlar
+  config/ai.yaml            provider'lar, registry seed, routing policy'leri
+  data/rag/*.jsonl          örnek RAG verisi (tr, en)
+  tests/unit | integration | benchmark
+```
 
-Domain katmanı şunları import ETMEMELİ:
+---
 
--   ollama
--   OpenAI SDK
--   herhangi bir cloud LLM SDK
--   FastAPI
--   SQLAlchemy
+## Hızlı başlangıç (Docker)
 
-Domain yalnızca kendi entity/value object/interface yapılarını
-bilmelidir.
+Gereksinimler: Docker (Compose v2), host makinede [Ollama](https://ollama.com).
 
-## Application
+```bash
+cd backend
+cp .env.example .env              # DEFAULT_GENERATION_MODEL vb. düzenle, ADMIN_API_TOKEN ver
 
-Use-case orchestration:
+# 1) Modeller (host makinede)
+ollama pull gemma4:12b            # varsayılan generation modeli (veya .env'de seçtiğin başka bir model)
+ollama pull qwen3-embedding:0.6b  # çok dilli embedding modeli
 
--   kart üret
--   kartı yeniden üret
--   RAG bağlamı getir
--   model seç
--   doğrula
--   kaydet
+# 2) API + PostgreSQL/pgvector (migration'lar container açılışında otomatik çalışır)
+docker compose up -d --build
+curl -s localhost:8000/v1/health
+# {"status":"ok","components":{"database":"ok","generation":"ok","embedding":"ok"}}
 
-## Infrastructure
+# 3) Örnek RAG verisini yükle (embedding'ler Ollama ile hesaplanır)
+docker compose exec api python -m app.cli rag-ingest data/rag/seed_tr.jsonl data/rag/seed_en.jsonl
 
-Dış sistem implementasyonları:
+# 4) Kart üret
+curl -s -X POST localhost:8000/v1/cards/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"language":"tr","category":"technology","difficulty":"medium","count":5}'
+```
 
--   Ollama adapter
--   cloud provider adapterları
--   PostgreSQL
--   pgvector
--   HTTP client
--   telemetry
+Kullanım arayüzü: <http://localhost:8000/ui/> · Swagger UI: <http://localhost:8000/docs> ·
+OpenAPI: <http://localhost:8000/openapi.json>
+
+**Arayüz** (`app/ui/static/`, build adımı yok, API ile aynı origin'den sunulur): soldaki formdan dil,
+kategori, isteğe bağlı zorluk (varsayılan "Fark etmez") ve kart sayısı girilir. Kategori alanı serbest metindir; bir konu da yazılabilir
+(`technology`, `uzay yolculuğu`, `90'lar müziği`). Gelen kartlar partiler hâlinde listelenir, her kart
+iyi/kötü ve zorluk (kolay/uygun/zor) olarak işaretlenebilir ya da yeniden üretilebilir. Klavye:
+`j`/`k` gezin, `g`/`b` iyi/kötü, `1`/`2`/`3` zorluk, `r` yeniden üret, `?` tüm kısayollar.
+Liste tarayıcıda (localStorage) tutulur; kartlar ve geri bildirimler zaten veritabanına yazılır.
+
+> API container'ı host'taki Ollama'ya `http://host.docker.internal:11434` üzerinden erişir
+> (`OLLAMA_BASE_URL_DOCKER`). Ollama'yı container olarak çalıştırmak istersen:
+> `docker compose --profile ollama up -d` ve `.env` içinde
+> `OLLAMA_BASE_URL_DOCKER=http://ollama:11434`.
+
+Portlar `.env` ile değiştirilebilir: `API_HOST_PORT` (8000), `POSTGRES_HOST_PORT` (5432).
+
+---
+
+## Local geliştirme
+
+API'yi host'ta çalıştırmak (hot reload) için yalnızca veritabanını Docker'da başlat:
+
+```bash
+cd backend
+uv sync                                  # Python 3.12 + bağımlılıklar (.venv)
+cp .env.example .env
+docker compose up -d postgres
+uv run alembic upgrade head
+uv run uvicorn app.main:create_app --factory --reload --port 8000
+```
+
+`uv` yoksa bağımlılıkları pip ile kur, sonra komutları `uv run` olmadan çalıştır:
+
+```bash
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install fastapi "uvicorn[standard]" pydantic-settings "sqlalchemy[asyncio]" asyncpg \
+  alembic pgvector httpx pyyaml pytest pytest-asyncio
+```
+
+CLI komutları:
+
+```bash
+uv run python -m app.cli routing                         # router hangi modelleri, hangi sırayla dener
+uv run python -m app.cli seed-models [--overwrite]       # config/ai.yaml -> ai_models tablosu
+uv run python -m app.cli rag-ingest data/rag/seed_tr.jsonl
+uv run python -m app.cli rag-search --language tr "mutfak aleti"
+uv run python -m app.cli rag-reindex                     # aktif embedding space'te eksik vektörler
+uv run python -m app.cli generate --language tr --category food --count 3
+uv run python -m app.cli generate-for-target --language tr --target uçak --no-persist
+```
+
+---
+
+## Ollama
+
+- Generation modeli: `DEFAULT_GENERATION_MODEL` (varsayılan `gemma4:12b`). Model adı kodda geçmez;
+  `.env` → `config/ai.yaml` → `ai_models` registry tablosu zinciriyle gelir.
+- Embedding modeli: `DEFAULT_EMBEDDING_MODEL` (örn. `qwen3-embedding:0.6b`, 1024 boyut, çok dilli).
+- Structured output: Ollama `format` alanına JSON Schema gönderilir (native schema). Model bunu
+  desteklemiyorsa registry'de `supports_structured_output=false` yapılır; router otomatik olarak
+  JSON mode'a ya da strict prompt + tolerant JSON parser'a düşer.
+- Düşünen (reasoning) modeller için `OLLAMA_THINK=false` (varsayılan) düşünme çıktısını kapatır.
+
+**Model seçimi.** Benchmark runner ile gerçek pipeline üzerinde ölçüldü (Apple M4 Pro, 24 GB;
+5 Türkçe hedef kelime + TR/AR/EN toplu üretim, aynı promptlar ve RAG):
+
+| Model | Tek kart (ort.) | 5 kart toplu | İlk geçişte validasyon | Not |
+|---|---|---|---|---|
+| **`gemma4:12b`** (varsayılan) | 6.2 sn | ~19 sn | %100 | Türkçe kelimelerde hata yok |
+| `qwen3.5:9b` | 4.9 sn | ~16 sn | %92 | yazım hataları ("odunç", uydurma "gözükçe") |
+| `qwen3.5:27b` | ~28 sn | ~70 sn | %100 | GPU belleğine sığmıyor; bellek baskısında 180 sn timeout |
+
+Canlı API üzerinden `gemma4:12b` ile 5 kart ~26 sn, 10 kart ~31 sn sürer. Başka bir modeli denemek
+için aynı ölçümü çalıştır ([Testler ve benchmark](#testler-ve-benchmark)):
+
+```bash
+uv run python -m tests.benchmark.runner --dataset tests/benchmark/datasets/tr_basic.json --limit 5 \
+  --model ollama:gemma4:12b --model ollama:<aday-model> \
+  --rag-seed data/rag/seed_tr.jsonl --batch tr:technology:5 --batch ar:animals:3
+```
+
+**Bellek notu.** Generation modeli ve embedding modeli birlikte GPU belleğine sığmalıdır
+(`ollama ps` → `100% GPU`). Model sığmazsa Ollama bir kısmını CPU'ya taşır, istekler dakikalar sürer.
+GPU bellek yetersizliğinde (Metal OOM) de Ollama HTTP 200 ile boş cevap döner. Backend bu durumu
+`ProviderUnavailable` sayar ve fallback ile circuit breaker devreye girer. Büyük bir model kullanacaksan:
+
+```env
+OLLAMA_NUM_CTX=4096            # 10 kartlık batch için yeterli
+OLLAMA_EMBED_KEEP_ALIVE=0      # embedding modelini her çağrıdan sonra bellekten çıkar
+```
+
+Hata durumuna düşmüş bir runner'ı sıfırlamak için: `ollama stop <model>`. Model değiştirdikten sonra
+mevcut registry satırlarını güncellemek için `python -m app.cli seed-models --overwrite` çalıştır;
+kullanılmayan modeli `PATCH /admin/v1/models/{id}` ile `{"enabled": false}` yapabilirsin.
+
+---
+
+## PostgreSQL / pgvector ve migration
+
+`pgvector/pgvector:pg17` imajı kullanılır; ilk migration `CREATE EXTENSION vector` çalıştırır.
+
+```bash
+uv run alembic upgrade head                        # en son şemaya geç
+uv run alembic current                             # mevcut revizyon
+uv run alembic revision --autogenerate -m "..."    # model değişikliğinden yeni migration
+uv run alembic downgrade -1
+```
+
+Tablolar:
+
+| Tablo | İçerik |
+|---|---|
+| `cards` | kart (target, normalize `target_key`, dil, kategori, zorluk, kaynak, durum, provenance) |
+| `card_forbidden_words` | 5 yasaklı kelime (`position` 1-5, normalize `word_key`) |
+| `card_feedback` | oyuncu geri bildirimi (rating, difficulty_feedback), PII yok |
+| `rag_documents` | RAG dokümanları (dil, kelime, içerik, kategori, ilişkili terimler, kaynak, lisans, metadata) |
+| `rag_embeddings` | doküman vektörleri, **embedding space** başına (provider + model + version + dimension) |
+| `ai_models` | model registry (capabilities, fiyatlar, diller, quality_score, latency, health) |
+| `ai_requests` | her AI çağrısı: task, provider, model, prompt versiyonu, token, `api_estimated_cost`, latency, hata tipi, retry, fallback, parse hatası, validation sonuçları |
+| `generation_runs` | her üretim isteği: istenen/dönen kart, draft sayısı, kabul oranı, repair, RAG doküman sayısı |
+
+**Embedding space'ler.** Vektörler hangi model/versiyonla üretildiğiyle birlikte saklanır ve
+arama her zaman tek bir space içinde yapılır; farklı modellerin vektörleri asla karışmaz.
+Embedding modelini değiştirmek için:
+
+```bash
+# .env: DEFAULT_EMBEDDING_MODEL=<yeni-model>  EMBEDDING_VERSION=v2
+uv run python -m app.cli rag-reindex     # yeni space için tüm dokümanları embed eder
+```
+
+Her space için `rag-ingest`/`rag-reindex` sonrasında kısmi HNSW index otomatik oluşturulur.
+
+---
 
 ## API
 
-FastAPI route, request/response DTO ve hata dönüşümleri.
+### Public (Flutter)
 
-------------------------------------------------------------------------
+Flutter hiçbir zaman provider veya model seçmez. İstekte bilinmeyen alanlar (`"model"` gibi)
+**422** ile reddedilir. Cevaplarda provider/model bilgisi bulunmaz.
 
-# 4. Proje Dizini
+**`POST /v1/cards/generate`**
 
-Aşağıdaki yapıya yakın bir proje oluştur:
-
-``` text
-app/
-  main.py
-
-  api/
-    v1/
-      cards.py
-      health.py
-      models.py
-    dependencies.py
-    errors.py
-
-  domain/
-    cards/
-      entities.py
-      schemas.py
-      validator.py
-      repositories.py
-    ai/
-      generation.py
-      embeddings.py
-      capabilities.py
-      routing.py
-      exceptions.py
-
-  application/
-    cards/
-      generate_card.py
-      generate_cards.py
-      regenerate_card.py
-    rag/
-      retrieve_context.py
-      index_document.py
-    ai/
-      model_router.py
-      embedding_router.py
-
-  infrastructure/
-    ai/
-      providers/
-        ollama_generation.py
-        ollama_embedding.py
-        cloud_example.py
-      registry/
-        database_registry.py
-      routing/
-        policy_router.py
-
-    db/
-      models/
-      repositories/
-      session.py
-      migrations/
-
-    rag/
-      pgvector_store.py
-
-    observability/
-      metrics.py
-      ai_usage_repository.py
-
-  prompts/
-    card/
-      system_v1.md
-      generate_v1.md
-      repair_v1.md
-
-  config/
-    settings.py
-
-tests/
-  unit/
-  integration/
-  benchmark/
-
-docker-compose.yml
-Dockerfile
-.env.example
-README.md
-```
-
-İsimlerde küçük farklılıklar yapılabilir ancak bağımlılık sınırlarını
-koru.
-
-------------------------------------------------------------------------
-
-# 5. Domain Kart Modeli
-
-Kart modeli provider/model bilgisinden bağımsız olmalıdır.
-
-``` python
-class Card:
-    id: UUID | None
-    target: str
-    forbidden_words: list[str]
-    language: str
-    category: str | None
-    difficulty: str
-    source: str
-```
-
-Kurallar:
-
--   `target` boş olamaz.
--   `forbidden_words` tam 5 eleman içermeli.
--   Yasaklı kelimeler boş olamaz.
--   Aynı yasaklı kelime tekrar edemez.
--   Target kelimesinin birebir aynısı yasaklı kelimelerde bulunamaz.
--   Dil ISO-639-1 kodu şeklinde tutulmalı: `tr`, `en`, `de`, `fr`, `es`,
-    `ar`.
--   `difficulty`: `easy | medium | hard`.
--   Unicode normalization uygulanmalı.
--   Türkçe büyük/küçük harf gibi dile özgü karşılaştırmalar için
-    genişletilebilir normalization katmanı oluştur.
-
-İlk sürümde morfolojik analiz zorunlu değil; fakat validator
-genişletilebilir tasarlanmalı.
-
-------------------------------------------------------------------------
-
-# 6. Public API Sözleşmesi
-
-Flutter hiçbir zaman provider/model seçmemelidir.
-
-## POST `/v1/cards/generate`
-
-Request:
-
-``` json
-{
+```bash
+curl -s -X POST localhost:8000/v1/cards/generate -H 'Content-Type: application/json' -d '{
   "language": "tr",
   "category": "technology",
   "difficulty": "medium",
   "count": 10,
   "topic": null
-}
+}'
 ```
 
-Response:
-
-``` json
+```json
 {
   "cards": [
     {
-      "id": "uuid",
-      "target": "Bilgisayar",
-      "forbidden_words": [
-        "ekran",
-        "klavye",
-        "internet",
-        "işlemci",
-        "yazılım"
-      ],
+      "id": "6320ba57-4070-44c4-954c-a78f5a564a25",
+      "target": "Yapay Zeka",
+      "forbidden_words": ["Algoritma", "Bilgisayar", "Öğrenme", "Robot", "Simülasyon"],
       "language": "tr",
       "category": "technology",
       "difficulty": "medium"
@@ -316,998 +289,284 @@ Response:
 }
 ```
 
-Response içerisinde provider/model bilgisini Flutter'ın oyun mantığı
-için zorunlu hale getirme.
+- `language`: ISO-639-1 (`tr`, `en`, `de`, `fr`, `es`, `ar`; `SUPPORTED_LANGUAGES` ile ayarlanır)
+- `difficulty`: isteğe bağlı, `easy | medium | hard`. Gönderilmezse modele zorlukla ilgili hiçbir şey
+  iletilmez (prompt'ta da model şemasında da yok) ve kart `"difficulty": null` olarak döner/saklanır.
+  Zorluk geri bildirimi (`too_easy/correct/too_hard`) yalnızca zorluklu kartlar için anlamlıdır.
+- `count`: 1..`MAX_CARDS_PER_REQUEST`
+- `category`: serbest metin, kategori ya da konu (en fazla 50 karakter; harf, rakam, boşluk ve `- _ ' , . &`).
+  Dile duyarlı küçük harfe çevrilip saklanır (`İstanbul` → `istanbul`).
+- `topic`: opsiyonel ek tema (en fazla 100 karakter). Arayüz bunu kullanmaz; kategori alanı konu da alır.
+- Sistem tam `count` geçerli kart üretmeye çalışır. `ALLOW_PARTIAL_RESULTS=true` iken eksik
+  sayıda kart dönebilir; hiç geçerli kart yoksa 502 döner.
 
-Gerekirse admin/debug telemetry ayrı endpointte bulunabilir.
+**`POST /v1/cards/{id}/feedback`**
 
-## POST `/v1/cards/{id}/feedback`
-
-İleride eğitim/benchmark datası için:
-
-``` json
-{
-  "rating": "good",
-  "difficulty_feedback": "too_easy"
-}
+```bash
+curl -s -X POST localhost:8000/v1/cards/<id>/feedback -H 'Content-Type: application/json' \
+  -d '{"rating": "good", "difficulty_feedback": "too_easy"}'
+# 201 {"id": "...", "card_id": "...", "status": "recorded"}
 ```
 
-Desteklenecek örnek değerler:
+`rating`: `good | bad` · `difficulty_feedback`: `too_easy | correct | too_hard` (en az biri gerekli).
 
--   `good`
--   `bad`
--   `too_easy`
--   `correct`
--   `too_hard`
+**`POST /v1/cards/{id}/regenerate`**: aynı hedef kelime için yeni yasaklı kelimeler üretir;
+eski kart `replaced` durumuna geçer.
 
-Feedback modeli daha sonra genişletilebilir.
+**`GET /v1/health`**: yalnızca kaba bileşen durumu döner (`ok | degraded | unavailable`), provider detayı içermez.
 
-------------------------------------------------------------------------
+**Hata formatı** (tüm hatalar):
 
-# 7. Generation Provider Interface
-
-Bütün generation modelleri tek sözleşmeye uymalı.
-
-Örnek abstraction:
-
-``` python
-from typing import Protocol
-
-class GenerationProvider(Protocol):
-
-    async def generate_text(
-        self,
-        *,
-        model: str,
-        messages: list,
-        temperature: float,
-        max_tokens: int | None = None,
-    ) -> "GenerationResult":
-        ...
-
-    async def generate_structured(
-        self,
-        *,
-        model: str,
-        messages: list,
-        schema: type,
-        temperature: float,
-    ) -> "GenerationResult":
-        ...
-
-    async def health_check(self) -> bool:
-        ...
+```json
+{"error": {"code": "generation_unavailable", "message": "Card generation is temporarily unavailable. Please retry."}}
 ```
 
-Normalize edilmiş sonuç:
+| HTTP | code | Ne zaman |
+|---|---|---|
+| 422 | `invalid_request` | doğrulama hatası, desteklenmeyen dil, bilinmeyen alan |
+| 404 | `card_not_found` | |
+| 429 | `rate_limited` | rate limiter (şimdilik no-op extension point) |
+| 502 | `generation_failed` | model geçerli JSON/kart üretemedi (retry/repair sonrası) |
+| 503 | `generation_unavailable` / `generation_busy` / `storage_unavailable` / `context_unavailable` | provider, DB veya RAG erişilemez |
+| 504 | `generation_timeout` | |
 
-``` python
-class GenerationResult:
-    content: str
-    parsed: object | None
-    input_tokens: int | None
-    output_tokens: int | None
-    latency_ms: int
-    provider: str
-    model: str
-    raw_finish_reason: str | None
+### Admin (`/admin/v1`, `X-Admin-Token` header'ı gerekli)
+
+`ADMIN_API_TOKEN` boşsa admin API kapalıdır (403).
+
+```bash
+T=$(grep ^ADMIN_API_TOKEN .env | cut -d= -f2)
+curl -s localhost:8000/admin/v1/models -H "X-Admin-Token: $T"                     # registry
+curl -s -X PATCH localhost:8000/admin/v1/models/<id> -H "X-Admin-Token: $T" \
+  -H 'Content-Type: application/json' -d '{"enabled": false}'                    # model kapat/aç, fiyat, priority, quality_score
+curl -s localhost:8000/admin/v1/routing/card_generation -H "X-Admin-Token: $T"    # denenecek model sırası
+curl -s localhost:8000/admin/v1/health -H "X-Admin-Token: $T"                     # provider sağlığı, circuit breaker
+curl -s "localhost:8000/admin/v1/telemetry?hours=24" -H "X-Admin-Token: $T"       # token, maliyet, latency, kabul oranı
+curl -s localhost:8000/admin/v1/metrics -H "X-Admin-Token: $T"                    # process içi sayaçlar
+curl -s -X POST localhost:8000/admin/v1/rag/documents -H "X-Admin-Token: $T" -H 'Content-Type: application/json' \
+  -d '{"documents":[{"language":"tr","word":"kahve","content":"Kavrulmuş çekirdeklerden yapılan içecek","source":"manual"}]}'
+curl -s -X POST localhost:8000/admin/v1/rag/search -H "X-Admin-Token: $T" -H 'Content-Type: application/json' \
+  -d '{"language":"tr","query":"sıcak içecek"}'
+curl -s -X POST localhost:8000/admin/v1/cards/generate-for-target -H "X-Admin-Token: $T" -H 'Content-Type: application/json' \
+  -d '{"target":"uçak","language":"tr","difficulty":"easy","persist":false}'
 ```
 
-Application/domain kodu provider'ın raw response objesini görmemelidir.
+---
 
-------------------------------------------------------------------------
+## RAG
 
-# 8. Embedding Provider Interface
+Akış: `topic/category/target → query → EmbeddingProvider → pgvector (aynı dil filtresi) → top-k → prompt'ta <reference_context>`.
 
-Generation'dan ayrı abstraction oluştur.
+- `RAG_ENABLED=false` ile tamamen kapanır.
+- `RAG_TOP_K` ve `RAG_MIN_SIMILARITY` ayarlanabilir.
+- `RAG_FAIL_OPEN=true` (varsayılan): embedding veya DB hatasında bağlamsız devam edilir. `false` olursa 503 döner.
+- RAG içeriği prompt'a **talimat olarak değil**, işaretli ve güvenilmeyen bağlam olarak girer. System prompt
+  bu bloktaki talimatların yok sayılmasını söyler; `<`/`>` karakterleri temizlenir.
+- Arama her zaman istek dilinde yapılır (TR→TR, EN→EN). Çeviri tabanlı üretim yoktur.
 
-``` python
-class EmbeddingProvider(Protocol):
+JSONL doküman formatı (`data/rag/seed_tr.jsonl`):
 
-    async def embed(
-        self,
-        *,
-        model: str,
-        texts: list[str]
-    ) -> "EmbeddingResult":
-        ...
-
-    async def health_check(self) -> bool:
-        ...
+```json
+{"language":"tr","word":"uçak","content":"Kanatları sayesinde havada uçan taşıt.","category":"transport","related_terms":["pilot","havalimanı"],"source":"project-seed","source_license":"CC0-1.0","metadata":{}}
 ```
 
-Embedding modelinin değişmesi mevcut vektör indeksinin yeniden
-oluşturulmasını gerektirebileceğinden şu metadata saklanmalıdır:
+Aynı `(language, word, source)` tekrar yüklenirse doküman güncellenir. İçerik değiştiyse vektörü de yeniden hesaplanır.
 
--   provider
--   model
--   embedding dimension
--   embedding version
--   indexed_at
+---
 
-Aynı vector collection/index içinde uyumsuz embedding modellerini
-karıştırma.
+## Model / provider değiştirme ve ekleme
 
-------------------------------------------------------------------------
+**Başka bir Ollama modeli:** `.env` → `DEFAULT_GENERATION_MODEL=<model>`, `ollama pull <model>`,
+yeniden başlat. Registry'ye otomatik eklenir (`MODEL_REGISTRY_SYNC=insert_missing`).
 
-# 9. Provider Adapter Sistemi
+**Fallback modeli:** `.env` → `FALLBACK_GENERATION_MODEL=<ikinci-model>`. Router önce primary'yi
+dener. Bağlantı, timeout, 5xx/429 veya parse hatasında sıradakine geçer
+(`max_provider_attempts`). Sürekli hata veren model circuit breaker ile bir süre devreden çıkar.
 
-İlk adapter:
+**OpenAI-uyumlu bir cloud sağlayıcı** (kod değişikliği gerekmez), `config/ai.yaml` üzerinden:
 
-``` text
-OllamaGenerationProvider
-OllamaEmbeddingProvider
-```
-
-Sonradan:
-
-``` text
-ProviderXGenerationProvider
-ProviderYGenerationProvider
-```
-
-eklenebilmeli.
-
-Yeni provider eklemek için:
-
-1.  Provider interface implement et.
-2.  Provider factory/DI container'a kaydet.
-3.  Model Registry'ye model ekle.
-4.  Routing policy'de aktif et.
-
-Card generation kodunda değişiklik gerekmemeli.
-
-------------------------------------------------------------------------
-
-# 10. Capability Normalization
-
-Bütün modeller aynı özellikleri desteklemez.
-
-Capability modeli oluştur:
-
-``` python
-class ModelCapabilities:
-    structured_output: bool
-    json_mode: bool
-    tool_calling: bool
-    vision: bool
-    streaming: bool
-    max_context_tokens: int | None
-```
-
-`generate_structured()` çağrısında:
-
-1.  Native schema/structured output destekleniyorsa onu kullan.
-2.  JSON mode varsa JSON mode + parser kullan.
-3.  Hiçbiri yoksa strict prompt + JSON parser kullan.
-4.  Parse başarısızsa repair/retry mekanizmasını çalıştır.
-
-Domain katmanı bu farklılıkları bilmemeli.
-
-------------------------------------------------------------------------
-
-# 11. Model Registry
-
-PostgreSQL'de model registry oluştur.
-
-Önerilen alanlar:
-
-``` text
-id
-provider
-model_name
-model_type           generation | embedding
-enabled
-is_local
-priority
-input_cost_per_million
-output_cost_per_million
-currency
-supports_structured_output
-supports_json_mode
-supports_tools
-supports_vision
-context_window
-languages
-quality_score
-avg_latency_ms
-health_status
-created_at
-updated_at
-```
-
-`quality_score` başlangıçta null olabilir.
-
-Kendi benchmark sonuçlarımızdan güncellenmelidir.
-
-Cloud fiyatlarını kod içine gömme; registry/config üzerinden yönet.
-
-------------------------------------------------------------------------
-
-# 12. Model Router
-
-Kart servisi doğrudan provider seçmemeli.
-
-Örnek:
-
-``` python
-result = await model_router.generate_structured(
-    task="card_generation",
-    messages=messages,
-    schema=GeneratedCardBatch,
-    requirements={
-        "language": "tr",
-        "structured_output": True
-    }
-)
-```
-
-Router aşağıdaki kriterleri destekleyecek şekilde tasarlanmalı:
-
--   enabled
--   health
--   capability
--   language
--   task
--   local/cloud
--   cost
--   quality
--   latency
--   priority
-
-İlk MVP routing policy:
-
-``` text
-1. Primary model
-2. Primary başarısızsa fallback #1
-3. O da başarısızsa fallback #2
-4. Tümü başarısızsa kontrollü service error
-```
-
-Retry sonsuz döngüye girmemeli.
-
-------------------------------------------------------------------------
-
-# 13. Routing Configuration
-
-Örnek config:
-
-``` yaml
+```yaml
+providers:
+  cloud_a:
+    type: openai_compatible
+    base_url: https://api.cloud-a.example/v1
+    api_key_env: CLOUD_A_API_KEY        # anahtarın kendisi değil, env değişkeninin ADI
+models:
+  - provider: cloud_a
+    model_name: model-x
+    model_type: generation
+    is_local: false
+    priority: 30
+    capabilities: {structured_output: true, json_mode: true}
+    context_window: 128000
+    pricing: {input_cost_per_million: 0.10, output_cost_per_million: 0.40, currency: USD}
 routing:
   card_generation:
     providers:
-      - provider: ollama
-        model: qwen
-        priority: 1
-
-      - provider: cloud_x
-        model: model-x
-        priority: 2
-
-    max_provider_attempts: 3
+      - {provider: ollama,  model: "${DEFAULT_GENERATION_MODEL}", priority: 1}
+      - {provider: cloud_a, model: model-x, priority: 2}
 ```
 
-Development'ta yalnızca Ollama çalışabilmeli.
+`.env` → `CLOUD_A_API_KEY=...`. Anahtar yoksa provider devre dışı kalır ve uygulama yine başlar
+(`/admin/v1/health` → `disabled_providers`). Registry satırı zaten varsa
+`python -m app.cli seed-models --overwrite` çalıştır ya da admin API ile güncelle.
 
-Cloud credentials yoksa uygulama startup sırasında gereksiz yere crash
-etmemeli; ilgili provider disabled olmalı.
+**Yeni bir provider tipi** (farklı bir API), card kodu değişmeden:
 
-------------------------------------------------------------------------
+1. `app/infrastructure/ai/providers/` altında `BaseGenerationProvider`'dan türet; yalnızca `_complete()` ve `health_check()` yaz. HTTP hatalarını `send_json` normalize eder.
+2. `app/infrastructure/ai/providers/factory.py` → `GENERATION_FACTORIES` (ve gerekiyorsa `EMBEDDING_FACTORIES`) içine kaydet.
+3. `config/ai.yaml` → `models` altında registry'ye ekle (capabilities + fiyat).
+4. `config/ai.yaml` → `routing` altında policy'de aktif et.
 
-# 14. RAG
+Routing stratejileri (`strategy`): `priority` (varsayılan), `cost`, `quality`, `latency`, `local_first`.
+Filtreler: enabled, adapter mevcut mu, circuit durumu, capability (`structured_output`), dil, local_only.
 
-RAG generation modelinden bağımsız olmalıdır.
+---
 
-Akış:
+## Validasyon, repair ve retry limitleri
 
-``` text
-target/topic
-    |
-    v
-query builder
-    |
-    v
-EmbeddingProvider
-    |
-    v
-pgvector similarity search
-    |
-    v
-top-k context
-    |
-    v
-Prompt Builder
-    |
-    v
-Model Router
+```text
+LLM çıktısı → Pydantic şema → Unicode normalizasyon → kural validator'ları → güvenlik filtresi
+            → duplicate kontrolü (batch + DB) → geçerli: kaydet | onarılabilir: repair prompt | değil: at
 ```
 
-RAG doküman modeli:
+Kurallar (`app/domain/cards/validator.py`, her biri ayrı ve değiştirilebilir `CardRule`):
+tam 5 yasaklı kelime, boş değer yok, tekrar eden yasaklı kelime yok (dile duyarlı: `IŞIK` = `ışık`),
+target yasaklılar arasında yok, yasaklı kelime target'ı içermiyor (`kahve` → `kahveci`),
+maksimum uzunluk, dilin alfabesi (Latin/Arapça script kontrolü), aynı batch'te tekrar eden target yok,
+DB'de aynı target + benzer yasaklı set (Jaccard ≥ `DUPLICATE_FORBIDDEN_OVERLAP_THRESHOLD`) → reddedilir,
+aynı target farklı set → `duplicate_candidate` olarak işaretlenir.
 
-``` text
-id
-language
-word
-definition
-category
-related_terms
-source
-source_license
-metadata JSONB
-embedding vector
-embedding_model
-embedding_version
+Normalizasyon dile göre genişletilebilir (`NormalizerRegistry`): Türkçe/Azerice I/İ kuralları,
+Arapça hareke/tatweel/elif varyantları. Arapça metin olduğu gibi saklanır; RTL gösterimi Flutter'ın işidir.
+
+Güvenlik filtresi: `config/blocklists/<dil>.txt` (satır başına bir terim) varsa devreye girer.
+`ContentSafetyFilter` arayüzüyle harici bir moderasyon servisi takılabilir.
+
+Limitler (hepsi `.env` ile değiştirilebilir, sonsuz döngü yok):
+
+| Ayar | Varsayılan | Anlamı |
+|---|---|---|
+| `MAX_PARSE_RETRIES` | 1 | aynı modelde bozuk JSON sonrası "JSON'u düzelt" denemesi |
+| `MAX_REPAIR_ATTEMPTS` | 2 | validasyondan kalan kartlar için repair prompt turu (target korunur) |
+| `MAX_GENERATION_ROUNDS` | 4 | eksik kart için yeni üretim turu |
+| `max_provider_attempts` (ai.yaml) / `DEFAULT_MAX_PROVIDER_ATTEMPTS` | 3 | fallback zinciri uzunluğu |
+| `CARD_BATCH_SIZE` | 10 | tek LLM çağrısında istenen en fazla kart |
+
+---
+
+## Promptlar
+
+`app/prompts/<grup>/<ad>_<versiyon>.md`, YAML front matter ile (`name`, `version`,
+`language_strategy`, `created_at`). Yer tutucular `{{ değişken }}` biçimindedir. Eksik ya da fazla
+değişken hata verir. Promptlarda provider/model adı geçmez (test ile kontrol edilir).
+
+| Dosya | Kullanım |
+|---|---|
+| `card/system_v1.md` | kurallar + prompt injection koruması |
+| `card/generate_v1.md` | kategori/zorluk için yeni kartlar |
+| `card/generate_for_targets_v1.md` | verilen hedef kelime(ler) için kart (regenerate, benchmark) |
+| `card/repair_v1.md` | validasyon hatalarıyla birlikte düzeltme |
+| `common/json_schema_instruction_v1.md` | native schema desteklemeyen modeller için |
+| `common/json_repair_v1.md` | parse hatası sonrası |
+
+Yeni versiyon: `generate_v2.md` gibi dosyalar ekle (front matter `version: v2`),
+`CARD_PROMPT_VERSION=v2`. Kullanılan prompt adı/versiyonu her `ai_requests` ve `generation_runs` satırına yazılır.
+
+---
+
+## Observability
+
+- Her provider çağrısı (parse retry'lar dahil) `ai_requests`'e yazılır: task, provider, model,
+  local/cloud, prompt versiyonu, token, `api_estimated_cost` (registry fiyatlarından; local = 0 API
+  maliyeti, altyapı maliyeti değil), latency, hata tipi, retry, fallback, parse hatası, validation
+  hatası ve kabul edilen kart sayısı.
+- Her istek `generation_runs`'a yazılır (kart kabul oranı, repair, tur sayısı, RAG doküman sayısı).
+- Kartlar `ai_request_id` / `generation_run_id` ile üretildikleri çağrıya bağlanır. Bu bağlantı
+  ileride SFT/fine-tuning verisi (prompt versiyonu + model + feedback) için kullanılabilir.
+- Loglar key=value formatındadır. Prompt, model cevabı ve API anahtarları loglanmaz.
+- `GET /admin/v1/telemetry` ve `GET /admin/v1/metrics` özet verir.
+
+---
+
+## Testler ve benchmark
+
+```bash
+uv run pytest                              # unit + (PostgreSQL açıksa) integration
+uv run pytest tests/unit                   # LLM ve DB gerektirmez (fake provider'lar)
+docker compose up -d postgres && uv run pytest tests/integration
+RUN_OLLAMA_TESTS=1 uv run pytest tests/integration/test_ollama_live.py   # gerçek Ollama (yavaş)
+uv run ruff check app tests
 ```
 
-Çoklu dil aramasında `language` filtresi uygula.
+- Unit testler: validator, normalizasyon, duplicate, structured output parsing, capability seçimi,
+  routing, fallback, parse retry, circuit breaker, maliyet hesabı, prompt rendering,
+  provider adapterları (mock HTTP), use case'ler, HTTP sözleşmesi, mimari sınırlar.
+- Integration testler ayrı bir `<db>_test` veritabanı oluşturup Alembic ile migrate eder;
+  development verisine dokunmaz. PostgreSQL yoksa atlanır.
+- Gerçek cloud çağrısı yapan test yoktur.
 
-İlk sürümde `top_k` config üzerinden değiştirilebilir olsun.
+**Benchmark** (`tests/benchmark/`): verilen hedef kelimeleri gerçek pipeline'dan geçirir, router'ı
+tek bir modele sabitler, veritabanına yazmaz.
 
-RAG sonucu modele doğrudan güvenilir talimat olarak değil, `context`
-olarak verilmelidir.
-
-------------------------------------------------------------------------
-
-# 15. Prompt Management
-
-Promptları Python stringleri içine gömme.
-
-Dosyalarda tut:
-
-``` text
-prompts/card/system_v1.md
-prompts/card/generate_v1.md
-prompts/card/repair_v1.md
+```bash
+uv run python -m tests.benchmark.runner \
+  --dataset tests/benchmark/datasets/tr_basic.json \
+  --model ollama:gemma4:12b [--model cloud_a:model-x] \
+  --rag-seed data/rag/seed_tr.jsonl [--limit 5] [--batch tr:technology:5]
+# -> benchmark-reports/<zaman>/report.json, summary.csv, items.csv, batches.csv
 ```
 
-Prompt metadata:
-
-``` text
-name
-version
-language strategy
-created_at
-```
-
-Üretilen her kart batch'i ile kullanılan:
-
--   prompt name
--   prompt version
-
-telemetry'de kaydedilsin.
-
-Prompt içinde provider/model adı bulunmamalı.
-
-------------------------------------------------------------------------
-
-# 16. Structured Output
-
-LLM'den beklenen örnek schema:
-
-``` python
-class GeneratedCard(BaseModel):
-    target: str
-    forbidden_words: list[str]
-    category: str | None = None
-    difficulty: Literal["easy", "medium", "hard"]
-
-class GeneratedCardBatch(BaseModel):
-    cards: list[GeneratedCard]
-```
-
-`count=10` istenirse validator tam 10 geçerli kart elde etmeye
-çalışmalı.
-
-Tek seferde aşırı büyük batch isteme. Config ile batch size belirle.
-
-------------------------------------------------------------------------
-
-# 17. Validation Pipeline
-
-LLM çıktısı hiçbir zaman doğrudan database'e yazılmamalı.
-
-Pipeline:
-
-``` text
-LLM output
-   |
-   v
-Pydantic schema
-   |
-   v
-Normalization
-   |
-   v
-Rule validators
-   |
-   v
-Duplicate checks
-   |
-   v
-Semantic checks (opsiyonel)
-   |
-   +--> PASS --> persist
-   |
-   +--> FAIL --> repair/regenerate
-```
-
-İlk validator kuralları:
-
-1.  Tam 5 forbidden word.
-2.  Duplicate forbidden word yok.
-3.  Target forbidden listesinde yok.
-4.  Boş değer yok.
-5.  Maksimum kelime uzunluğu.
-6.  Dil karakterleri geçerli.
-7.  Aynı batch içinde target tekrar etmiyor.
-8.  Database'de aynı target + language + yakın forbidden kombinasyonu
-    varsa duplicate adayı.
-9.  Güvenlik/uygunsuz içerik filtresi genişletilebilir bir interface
-    üzerinden uygulanabilmeli.
-
-Validation sonucu:
-
-``` python
-class ValidationResult:
-    valid: bool
-    errors: list[str]
-    warnings: list[str]
-```
-
-------------------------------------------------------------------------
-
-# 18. Repair / Retry
-
-Validation fail olduğunda tüm isteği körlemesine yeniden üretme.
-
-Önce repair prompt kullanılabilir:
-
-``` text
-Bu kart aşağıdaki validation hatalarını aldı:
-- forbidden_words 4 adet
-- target yasaklı listede bulunuyor
-
-Kartı aynı hedef kelimeyi koruyarak düzelt.
-```
-
-Maximum:
-
--   parse retry
--   validation repair retry
--   provider fallback
-
-ayrı limitlere sahip olsun.
-
-Limitler config üzerinden yönetilsin.
-
-------------------------------------------------------------------------
-
-# 19. Duplicate Detection
-
-İki katman kullan:
-
-## Exact
-
-Normalize edilmiş:
-
-``` text
-language + target
-```
-
-ve forbidden word set kontrolü.
-
-## Semantic
-
-İleride embedding üzerinden kart/target benzerliği kontrol edilebilir.
-
-Semantic similarity tek başına kartı reddetmemeli; configurable
-threshold ile duplicate adayı olarak işaretlenmeli.
-
-------------------------------------------------------------------------
-
-# 20. Database Tabloları
-
-Minimum tablolar:
-
-## `cards`
-
-``` text
-id UUID
-target
-language
-category
-difficulty
-source
-status
-created_at
-updated_at
-```
-
-## `card_forbidden_words`
-
-``` text
-id
-card_id
-word
-position
-```
-
-## `rag_documents`
-
-``` text
-id
-language
-word
-content
-category
-source
-source_license
-metadata JSONB
-embedding VECTOR
-embedding_model
-embedding_version
-created_at
-```
-
-## `ai_models`
-
-Model Registry.
-
-## `ai_requests`
-
-``` text
-id
-task
-provider
-model
-prompt_name
-prompt_version
-input_tokens
-output_tokens
-estimated_cost
-latency_ms
-success
-error_type
-retry_count
-created_at
-```
-
-## `card_feedback`
-
-``` text
-id
-card_id
-rating
-difficulty_feedback
-created_at
-```
-
-Kullanıcı kimliği eklenirse privacy-first tasarla ve gereksiz PII
-saklama.
-
-------------------------------------------------------------------------
-
-# 21. Observability
-
-Her AI request için ölç:
-
--   task
--   provider
--   model
--   local/cloud
--   latency
--   token kullanımı mevcutsa
--   estimated cost
--   HTTP/provider hata tipi
--   parse failure
--   validation failure
--   retry
--   fallback kullanıldı mı
--   prompt version
--   kart acceptance rate
-
-API key veya prompt içindeki hassas verileri loglama.
-
-------------------------------------------------------------------------
-
-# 22. Cost Tracking
-
-Cloud modeller için:
-
-``` text
-estimated_cost =
-(input_tokens / 1_000_000 * input_price)
-+
-(output_tokens / 1_000_000 * output_price)
-```
-
-Fiyatlar registry'den gelsin.
-
-Local model için API cost `0` olabilir; fakat bu gerçek altyapı
-maliyetinin sıfır olduğu anlamına gelmediğinden alanı
-`api_estimated_cost` gibi açık isimlendir.
-
-------------------------------------------------------------------------
-
-# 23. Health Check ve Circuit Breaker
-
-Provider health:
-
-``` text
-healthy
-degraded
-unavailable
-```
-
-Sürekli hata veren provider'a her request göndermemek için circuit
-breaker tasarımına uygun abstraction oluştur.
-
-MVP'de basit failure counter kullanılabilir.
-
-Endpoint:
-
-``` http
-GET /v1/health
-```
-
-Public health endpoint hassas provider detaylarını döndürmemeli.
-
-Admin/debug endpoint ayrı tutulabilir.
-
-------------------------------------------------------------------------
-
-# 24. Çoklu Dil
-
-Kart dili request ile gelir.
-
-RAG araması aynı dilde yapılır.
-
-Kartları bir dilden diğerine otomatik çevirerek ana üretim yöntemi
-yapma.
-
-Tercih edilen akış:
-
-``` text
-TR target -> TR RAG -> TR generation
-EN target -> EN RAG -> EN generation
-DE target -> DE RAG -> DE generation
-```
-
-İleride cross-lingual retrieval opsiyonel olarak eklenebilir.
-
-Arapça/RTL konusu backend'de metni bozmadan Unicode olarak
-saklanmalıdır; RTL presentation Flutter'ın sorumluluğudur.
-
-------------------------------------------------------------------------
-
-# 25. Local Development
-
-Docker Compose en az:
-
-``` text
-api
-postgres + pgvector
-```
-
-Ollama host makinede veya ayrı container olarak çalışabilir.
-
-`.env.example`:
-
-``` env
-APP_ENV=development
-DATABASE_URL=postgresql+asyncpg://...
-DEFAULT_GENERATION_PROVIDER=ollama
-DEFAULT_GENERATION_MODEL=...
-DEFAULT_EMBEDDING_PROVIDER=ollama
-DEFAULT_EMBEDDING_MODEL=...
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-```
-
-Model adlarını hard-code etme.
-
-------------------------------------------------------------------------
-
-# 26. Güvenlik
-
--   API keys `.env`/secret manager üzerinden.
--   Repository'ye secret commit etme.
--   Request validation.
--   Rate limiting için interface/extension point bırak.
--   Provider error body'lerini doğrudan client'a döndürme.
--   SQL injection'a karşı ORM/parameterized query.
--   Prompt injection'a karşı RAG context ile system instruction ayrımını
-    koru.
--   RAG kaynak metnini executable instruction gibi değerlendirme.
--   Maksimum input uzunlukları belirle.
--   Admin endpointlerini public API'den ayır.
-
-------------------------------------------------------------------------
-
-# 27. Benchmark Sistemi
-
-`tests/benchmark/` altında model karşılaştırma altyapısı oluştur.
-
-Benchmark dataset örneği:
-
-``` json
-[
-  {
-    "target": "uçak",
-    "language": "tr",
-    "difficulty": "medium"
-  },
-  {
-    "target": "kahve",
-    "language": "tr",
-    "difficulty": "medium"
-  }
-]
-```
-
-Her model için ölç:
-
--   JSON/schema success rate
--   validation pass rate
--   duplicate rate
--   average latency
--   token usage
--   estimated API cost
--   human rating (sonradan)
--   retry rate
-
-Benchmark sonucundan model registry `quality_score` üretmek için
-extension point bırak.
-
-İlk sürümde otomatik quality score uydurma.
-
-------------------------------------------------------------------------
-
-# 28. Test Stratejisi
-
-Unit tests:
-
--   Card validator
--   normalization
--   routing
--   fallback
--   cost calculation
--   capability selection
--   prompt rendering
-
-Integration tests:
-
--   PostgreSQL
--   pgvector
--   Ollama adapter
--   `/cards/generate`
-
-Provider testlerinde gerçek cloud API çağrıları default test suite
-içinde zorunlu olmamalı.
-
-Mock/Fake provider oluştur:
-
-``` python
-class FakeGenerationProvider:
-    ...
-```
-
-Böylece application testleri LLM olmadan çalışabilsin.
-
-------------------------------------------------------------------------
-
-# 29. Hata Modeli
-
-Normalize edilmiş internal exceptions:
-
-``` text
-ProviderUnavailable
-ProviderTimeout
-RateLimitExceeded
-StructuredOutputError
-ValidationExhausted
-NoEligibleModel
-EmbeddingError
-RAGUnavailable
-```
-
-FastAPI bunları kontrollü public error response'a dönüştürsün.
-
-Provider-specific exception'lar application katmanına sızmamalı.
-
-------------------------------------------------------------------------
-
-# 30. İlk Uygulama Sırası
-
-AI coding agent aşağıdaki sırayla geliştirsin:
-
-### Phase 1 --- Skeleton
-
--   FastAPI
--   settings
--   PostgreSQL
--   Alembic
--   health endpoint
--   clean architecture klasörleri
-
-### Phase 2 --- AI Abstraction
-
--   GenerationProvider
--   EmbeddingProvider
--   normalized result types
--   capabilities
--   FakeProvider
-
-### Phase 3 --- Ollama
-
--   Ollama generation adapter
--   Ollama embedding adapter
--   health check
-
-### Phase 4 --- Cards
-
--   domain models
--   Pydantic DTO
--   validator
--   CardRepository
--   `/v1/cards/generate`
-
-### Phase 5 --- RAG
-
--   pgvector
--   document ingestion
--   embedding
--   retrieval
--   prompt context
-
-### Phase 6 --- Router
-
--   Model Registry
--   primary/fallback
--   capability filtering
--   provider health
-
-### Phase 7 --- Observability
-
--   ai_requests
--   latency
--   token
--   cost
--   retry/fallback metrics
-
-### Phase 8 --- Benchmark
-
--   benchmark dataset
--   runner
--   report JSON/CSV
-
-Cloud provider adapterları bundan sonra eklenebilir.
-
-------------------------------------------------------------------------
-
-# 31. Definition of Done --- MVP
-
-MVP tamamlanmış sayılması için:
-
--   `docker compose up` ile backend/database kalkmalı.
--   Ollama ile local generation çalışmalı.
--   Ollama unavailable olduğunda kontrollü hata dönmeli.
--   `/v1/cards/generate` valid kart üretmeli.
--   RAG enable/disable config ile açılıp kapanabilmeli.
--   pgvector retrieval çalışmalı.
--   Card validator geçersiz LLM çıktısını database'e sokmamalı.
--   Promptlar versiyonlu dosyalarda bulunmalı.
--   Model adı domain/application içine hard-code edilmemeli.
--   Generation ve embedding providerları ayrı olmalı.
--   Fake provider ile unit testler LLM olmadan çalışmalı.
--   Model Registry provider/model değiştirmeyi desteklemeli.
--   Fallback en az iki provider adapterı varmış gibi test edilebilmeli.
--   AI request telemetry database'e yazılmalı.
--   README kurulum ve local test adımlarını içermeli.
--   `.env.example` bulunmalı.
--   API OpenAPI/Swagger üzerinden test edilebilmeli.
-
-------------------------------------------------------------------------
-
-# 32. Kritik Mimari Yasaklar
-
-Aşağıdakileri YAPMA:
-
-``` python
-# Card service içinde:
-ollama.chat(...)
-```
-
-YAPMA.
-
-``` python
-# Flutter request:
-{"model": "qwen"}
-```
-
-YAPMA.
-
-``` python
-# Domain:
-from openai import ...
-```
-
-YAPMA.
-
-``` python
-# Aynı abstraction:
-class AIProvider:
-    chat()
-    embed()
-    postgres()
-    ...
-```
-
-YAPMA.
-
-Bunun yerine küçük ve ayrı interface'ler kullan.
-
-------------------------------------------------------------------------
-
-# 33. Temel Tasarım Prensibi
-
-Bu backend'in gelecekte şu değişiklikleri minimum kod değişimiyle
-kaldırması gerekir:
-
-``` text
-Bugün:
-Ollama + Qwen local
-
-Yarın:
-Ucuz Cloud Provider A
-
-Daha sonra:
-Cloud Provider B + yeni model
-
-Fallback:
-Local Qwen
-
-Embedding:
-Sabit multilingual embedding model
-
-Daha sonra:
-Yeni embedding modeli + yeni vector index version
-```
-
-Kart üretme domain mantığı bu değişikliklerden etkilenmemelidir.
-
-------------------------------------------------------------------------
-
-# 34. AI Coding Agent İçin Son Talimat
-
-Bu dokümanı sadece mimari öneri olarak açıklama.
-
-**Çalışan backend projesini oluştur.**
-
-Kurallar:
-
-1.  Önce klasör yapısını ve implementation planını çıkar.
-2.  Sonra gerçek dosyaları oluştur.
-3.  Placeholder/pseudo-code bırakmamaya çalış.
-4.  Her phase sonunda test çalıştır.
-5.  Provider-specific kodu infrastructure dışında kullanma.
-6.  Domain/application katmanlarını provider SDK'larından bağımsız tut.
-7.  Local Ollama ilk çalışan provider olsun.
-8.  Cloud provider eklemek için açık extension point bırak.
-9.  Public Flutter API'sini provider/model değişimlerinden bağımsız tut.
-10. README içinde:
-
--   kurulum
--   Docker
--   PostgreSQL/pgvector
--   Ollama
--   migration
--   test
--   örnek API request adımlarını eksiksiz yaz.
-
-11. Kararsız kaldığın küçük implementation detaylarında bu mimari
-    ilkelerine uygun makul varsayım yap; projeyi yarım bırakma.
-12. Güvenlik anahtarlarını veya gerçek secret değerlerini repository'ye
-    yazma.
-
-İlk hedef: **local Ollama ile çalışan, RAG destekli, provider-agnostic
-kart üretme MVP backend'i.**
+Model başına ölçülenler: final başarı oranı, JSON/şema başarı oranı, ilk geçişte validasyon oranı,
+duplicate oranı, retry oranı, ortalama/p95 latency, token, tahmini API maliyeti; `--batch` ile
+arayüzün kullandığı toplu üretimin süresi ve dönen kart oranı. `items.csv`'deki
+boş `human_rating` sütunu insan puanlaması içindir. `quality_score` otomatik uydurulmaz:
+`QualityScorer` extension point'i vardır; değer admin API ile (`PATCH /admin/v1/models/{id}`) girilir.
+
+---
+
+## Konfigürasyon referansı
+
+Tamamı `.env.example` içinde açıklamalı olarak bulunur. En önemlileri:
+
+| Değişken | Açıklama |
+|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://...` (compose'da container için otomatik ayarlanır) |
+| `DEFAULT_GENERATION_PROVIDER` / `_MODEL` | birincil generation modeli |
+| `FALLBACK_GENERATION_PROVIDER` / `_MODEL` | opsiyonel ikinci model |
+| `DEFAULT_EMBEDDING_PROVIDER` / `_MODEL`, `EMBEDDING_VERSION` | aktif embedding space |
+| `OLLAMA_BASE_URL`, `OLLAMA_BASE_URL_DOCKER`, `OLLAMA_TIMEOUT_SECONDS` | Ollama erişimi |
+| `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_EMBED_KEEP_ALIVE` | model seçenekleri (registry `provider_options`) |
+| `SUPPORTED_LANGUAGES` | kabul edilen diller |
+| `RAG_ENABLED`, `RAG_TOP_K`, `RAG_MIN_SIMILARITY`, `RAG_FAIL_OPEN` | RAG |
+| `MODEL_REGISTRY_SYNC` | `insert_missing` (varsayılan) · `overwrite` · `off` |
+| `ADMIN_API_TOKEN` | admin API anahtarı (boş = kapalı) |
+| `CORS_ALLOW_ORIGINS` | Flutter web için (mobil için gerekmez) |
+
+---
+
+## Güvenlik
+
+- Secret'lar yalnızca `.env` / secret manager'da tutulur. `.env` git'e girmez (`.gitignore`), `ai.yaml`
+  yalnızca env değişkeninin **adını** içerir.
+- İstek doğrulama: dil deseni, sayı sınırları, kategori karakter seti, `topic` uzunluğu, bilinmeyen alanlar reddedilir.
+- Provider hata gövdeleri ve iç adresler istemciye dönmez (test ile kontrol edilir).
+- SQL: yalnızca ORM ve parametreli sorgular (tek istisna olan index DDL'i literal escaping kullanır).
+- Prompt injection: system talimatı ile RAG bağlamı / kullanıcı teması ayrı ve işaretli bloklardadır.
+  RAG metni talimat olarak yorumlanmaz.
+- Admin API ayrı prefix'te ve token korumalıdır. Public health provider detayı vermez.
+- Rate limiting için `RateLimiter` arayüzü hazırdır (şu an no-op).
+- Container non-root kullanıcıyla çalışır.
+
+---
+
+## Bilinen sınırlar ve sonraki adımlar
+
+- **Senkron üretim:** `gemma4:12b` ile 5-10 kart 20-30 sn sürer, büyük modellerde dakikalar. Production için
+  arka plan işi + önceden üretilmiş kart havuzu (örn. Redis/queue) önerilir.
+- Circuit breaker ve metrikler süreç içidir. Birden fazla worker/instance için Redis tabanlı
+  implementasyon aynı arayüzle takılabilir.
+- Semantik duplicate kontrolü için yalnızca arayüz var (`SemanticDuplicateChecker`).
+- Morfolojik analiz yok. `kitap`/`kitabı` gibi çekimler yakalanmaz, validator'a yeni bir kural olarak eklenebilir.
+- Blocklist dosyaları boş gelir; içerik politikası ürün kararıdır.
+- Örnek RAG verisi küçüktür (`project-seed`, CC0). Gerçek sözlük verisi eklerken `source_license` alanını doldur.
